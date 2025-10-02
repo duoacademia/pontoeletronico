@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Ponto Eletrônico — DUO</title>
+  <meta name="color-scheme" content="light dark">
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#0f172a; --fg:#e5e7eb; --muted:#9aa4b2;
+      --brand:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --danger:#ef4444; --line:#1f2437;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial;
+      background:var(--bg); color:var(--fg); -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    }
+    .wrap{max-width:680px;margin:0 auto;padding:16px}
+    .card{
+      background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+    }
+    h1{margin:0 0 6px 0;font-size:20px}
+    p.sub{margin:0 0 16px 0;color:var(--muted);font-size:14px}
+    label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
+    input,button{
+      font:inherit; border-radius:12px; border:1px solid var(--line); background:#0c1426; color:var(--fg);
+    }
+    input{padding:12px 14px;width:100%}
+    .row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}
+    .btn{
+      padding:10px; border:1px solid var(--line); background:#0c1426; color:var(--fg); border-radius:12px;
+      text-align:center; cursor:pointer; user-select:none; outline:none;
+    }
+    .btn[data-active="true"]{border-color:var(--brand); box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+    .btn.ok{background:rgba(34,197,94,.08)}
+    .btn.warn{background:rgba(245,158,11,.08)}
+    .btn.danger{background:rgba(239,68,68,.08)}
+    .actions{display:flex;gap:10px;margin-top:12px}
+    .primary{flex:1;padding:12px 16px;background:var(--brand);border:0;color:white;font-weight:600}
+    .ghost{padding:12px 16px;background:transparent}
+    .media{
+      margin:10px 0;border-radius:12px;overflow:hidden;border:1px dashed var(--line);background:#0b1428;
+      aspect-ratio:3/4; display:flex;align-items:center;justify-content:center;position:relative;
+    }
+    video,canvas{width:100%;height:100%;object-fit:cover}
+    .hint{color:var(--muted);font-size:12px;margin-top:6px}
+    .status{margin-top:12px;font-size:14px}
+    .status.ok{color:var(--ok)} .status.err{color:var(--danger)}
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media (max-width:460px){ .row{grid-template-columns:repeat(2,1fr)} .grid-2{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Ponto Eletrônico</h1>
+      <p class="sub">Permita o acesso à <b>câmera</b> e <b>localização precisa</b> para registrar.</p>
+
+      <div class="grid-2">
+        <div>
+          <label>Nome (opcional)</label>
+          <input id="nome" placeholder="Ex.: Ana Silva" autocomplete="name" />
+        </div>
+        <div>
+          <label>ID do funcionário</label>
+          <input id="funcId" placeholder="Ex.: 123" inputmode="numeric" autocomplete="off" required />
+        </div>
+      </div>
+
+      <label>Tipo de registro</label>
+      <div class="row" id="tipoRow">
+        <button class="btn ok"    data-tipo="Entrada">Entrada</button>
+        <button class="btn warn"  data-tipo="Início do Intervalo">Início intervalo</button>
+        <button class="btn warn"  data-tipo="Final do Intervalo">Final intervalo</button>
+        <button class="btn danger"data-tipo="Saída">Saída</button>
+      </div>
+
+      <label>Selfie (câmera frontal)</label>
+      <div class="media">
+        <video id="video" playsinline muted></video>
+        <canvas id="canvas" hidden></canvas>
+      </div>
+      <div class="hint">A selfie é capturada automaticamente ao tocar em “Registrar ponto”.</div>
+
+      <div class="actions">
+        <button id="btnRegistrar" class="primary">Registrar ponto</button>
+        <button id="btnTrocarCamera" class="ghost" type="button">Trocar câmera</button>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div class="hint">GPS: usamos <code>enableHighAccuracy</code> com timeout curto para maior precisão.</div>
+    </div>
+  </div>
+
+  <script>
+    const WEB_APP_URL = "PASTE_YOUR_WEB_APP_URL_HERE"; // <- cole aqui a URL do seu Apps Script (/exec)
+
+    // UI refs
+    const tipoRow = document.getElementById('tipoRow');
+    const btns = [...tipoRow.querySelectorAll('.btn')];
+    const btnRegistrar = document.getElementById('btnRegistrar');
+    const btnTrocarCamera = document.getElementById('btnTrocarCamera');
+    const statusBox = document.getElementById('status');
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const nomeEl = document.getElementById('nome');
+    const funcIdEl = document.getElementById('funcId');
+
+    let selectedTipo = null;
+    let currentStream = null;
+    let useFront = true;
+
+    btns.forEach(b=>{
+      b.addEventListener('click', ()=>{
+        btns.forEach(x=>x.dataset.active = "false");
+        b.dataset.active = "true";
+        selectedTipo = b.dataset.tipo;
+      });
+    });
+
+    async function startCamera(){
+      try{
+        if(currentStream) currentStream.getTracks().forEach(t=>t.stop());
+        const constraints = {
+          video: {
+            facingMode: useFront ? "user" : "environment",
+            width: { ideal: 1080 }, height: { ideal: 1440 }
+          },
+          audio: false
+        };
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        await video.play();
+      }catch(err){
+        setStatus("Não foi possível acessar a câmera: " + err.message, true);
+      }
+    }
+
+    btnTrocarCamera.addEventListener('click', ()=>{
+      useFront = !useFront;
+      startCamera();
+    });
+
+    function setStatus(msg, isErr=false){
+      statusBox.textContent = msg;
+      statusBox.className = 'status ' + (isErr ? 'err' : 'ok');
+    }
+
+    function takeSelfie(){
+      const w = video.videoWidth || 1080;
+      const h = video.videoHeight || 1440;
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, w, h);
+      // JPEG 85% pra equilibrar qualidade/tamanho
+      return canvas.toDataURL('image/jpeg', 0.85);
+    }
+
+    function getLocation(){
+      return new Promise((resolve,reject)=>{
+        if(!navigator.geolocation) return reject(new Error("Geolocalização não suportada."));
+        navigator.geolocation.getCurrentPosition(
+          pos => resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            acc: pos.coords.accuracy
+          }),
+          err => reject(err),
+          { enableHighAccuracy:true, maximumAge:0, timeout:15000 }
+        );
+      });
+    }
+
+    async function registrar(){
+      try{
+        setStatus("Preparando…");
+        const funcId = (funcIdEl.value || "").trim();
+        const nome = (nomeEl.value || "").trim();
+        if(!funcId){ setStatus("Informe o ID do funcionário.", true); return; }
+        if(!selectedTipo){ setStatus("Selecione o tipo de registro.", true); return; }
+
+        setStatus("Obtendo localização precisa…");
+        const loc = await getLocation();
+
+        setStatus("Capturando selfie…");
+        const dataUrl = takeSelfie();
+
+        const payload = {
+          nome: nome || "",
+          funcionarioId: funcId,
+          tipo: selectedTipo,
+          latitude: loc.lat,
+          longitude: loc.lng,
+          accuracy: loc.acc,
+          photo: dataUrl,
+          userAgent: navigator.userAgent
+        };
+
+        setStatus("Enviando…");
+        const res = await fetch(WEB_APP_URL, {
+          method: "POST",
+          headers: { "Content-Type":"application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        // Apps Script web app retorna 200 + JSON
+        let ok = res.ok;
+        let out = {};
+        try { out = await res.json(); } catch(e) {}
+        if(ok && out.ok){
+          setStatus(`Registrado com sucesso às ${out.time || 'agora'}. Link da selfie salvo na planilha.`);
+          // limpa só o tipo selecionado pra forçar novo clique
+          btns.forEach(x=>x.dataset.active = "false"); selectedTipo=null;
+        }else{
+          throw new Error(out.message || "Falha no servidor.");
+        }
+      }catch(err){
+        setStatus("Erro: " + err.message, true);
+      }
+    }
+
+    btnRegistrar.addEventListener('click', registrar);
+
+    // Inicia câmera assim que possível
+    (async ()=>{ await startCamera(); })();
+  </script>
+</body>
+</html>
